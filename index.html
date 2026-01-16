@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>Ultimate Tetris</title>
+    <style>
+        body { background-color: #1a1a1a; color: white; display: flex; flex-direction: column; align-items: center; font-family: 'Segoe UI', sans-serif; height: 100vh; margin: 0; justify-content: center; }
+        #game-container { display: flex; gap: 20px; align-items: flex-start; background: #333; padding: 20px; border-radius: 10px; box-shadow: 0 20px 50px rgba(0,0,0,0.5); }
+        canvas { background-color: #000; border: 2px solid #555; display: block; }
+        .side-panel { display: flex; flex-direction: column; gap: 15px; width: 100px; }
+        .info-box { background: #222; border: 1px solid #444; padding: 10px; text-align: center; border-radius: 5px; }
+        .label { font-size: 12px; color: #888; margin-bottom: 5px; text-transform: uppercase; }
+        .value { font-size: 20px; font-weight: bold; color: #0f0; }
+        .controls-hint { margin-top: 20px; font-size: 12px; color: #666; text-align: center; }
+    </style>
+</head>
+<body>
+
+    <h1 style="margin-bottom: 10px;">ULTIMATE TETRIS</h1>
+
+    <div id="game-container">
+        <div class="side-panel">
+            <div class="info-box">
+                <div class="label">HOLD (C)</div>
+                <canvas id="holdCanvas" width="80" height="80"></canvas>
+            </div>
+        </div>
+
+        <canvas id="tetris" width="240" height="480"></canvas>
+
+        <div class="side-panel">
+            <div class="info-box">
+                <div class="label">NEXT</div>
+                <canvas id="nextCanvas" width="80" height="80"></canvas>
+            </div>
+            <div class="info-box">
+                <div class="label">SCORE</div>
+                <div id="score" class="value">0</div>
+            </div>
+            <div class="info-box">
+                <div class="label">LEVEL</div>
+                <div id="level" class="value">1</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="controls-hint">
+        ← → : 移動 / ↑ : 回転 / ↓ : 加速 / Space : ハードドロップ / C : ホールド
+    </div>
+
+<script>
+    const canvas = document.getElementById('tetris');
+    const ctx = canvas.getContext('2d');
+    const holdCanvas = document.getElementById('holdCanvas');
+    const hCtx = holdCanvas.getContext('2d');
+    const nextCanvas = document.getElementById('nextCanvas');
+    const nCtx = nextCanvas.getContext('2d');
+
+    const ROWS = 20, COLS = 10, SQ = 24;
+    const COLORS = [null, '#FF0D72', '#0DC2FF', '#0DFF72', '#F538FF', '#FF8E0D', '#FFE138', '#3877FF'];
+    const SHAPES = [
+        [],
+        [[1,1,1,1]], // I
+        [[1,1,1],[0,1,0]], // T
+        [[1,1],[1,1]], // O
+        [[0,1,1],[1,1,0]], // S
+        [[1,1,0],[0,1,1]], // Z
+        [[1,1,1],[1,0,0]], // L
+        [[1,1,1],[0,0,1]]  // J
+    ];
+
+    let board = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+    let score = 0, level = 1, linesCleared = 0;
+    let gameOver = false;
+    let canHold = true;
+    let nextType = Math.floor(Math.random() * 7) + 1;
+    let holdType = null;
+
+    class Piece {
+        constructor(type, x, y) {
+            this.type = type;
+            this.shape = SHAPES[type];
+            this.color = COLORS[type];
+            this.x = x ?? Math.floor(COLS / 2) - Math.floor(this.shape[0].length / 2);
+            this.y = y ?? 0;
+        }
+
+        rotate() {
+            const oldShape = this.shape;
+            this.shape = this.shape[0].map((_, i) => this.shape.map(row => row[i]).reverse());
+            if (this.collision(0, 0)) this.shape = oldShape;
+        }
+
+        collision(dx, dy, newShape = this.shape) {
+            for (let r = 0; r < newShape.length; r++) {
+                for (let c = 0; c < newShape[r].length; c++) {
+                    if (!newShape[r][c]) continue;
+                    let nx = this.x + c + dx;
+                    let ny = this.y + r + dy;
+                    if (nx < 0 || nx >= COLS || ny >= ROWS || (ny >= 0 && board[ny][nx])) return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    let p = new Piece(Math.floor(Math.random() * 7) + 1);
+
+    function drawSquare(x, y, color, context = ctx, isGhost = false) {
+        context.fillStyle = color;
+        if (isGhost) {
+            context.globalAlpha = 0.2;
+            context.strokeStyle = "white";
+            context.strokeRect(x * SQ, y * SQ, SQ, SQ);
+        }
+        context.fillRect(x * SQ, y * SQ, SQ, SQ);
+        context.globalAlpha = 1.0;
+        context.strokeStyle = "rgba(0,0,0,0.1)";
+        context.strokeRect(x * SQ, y * SQ, SQ, SQ);
+    }
+
+    function drawBoard() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        board.forEach((row, r) => row.forEach((cell, c) => {
+            if (cell) drawSquare(c, r, COLORS[cell]);
+        }));
+
+        // ゴーストの描画
+        let ghostY = p.y;
+        while (!p.collision(0, ghostY - p.y + 1)) ghostY++;
+        p.shape.forEach((row, r) => row.forEach((cell, c) => {
+            if (cell) drawSquare(p.x + c, ghostY + r, p.color, ctx, true);
+        }));
+
+        // 現在のピース描画
+        p.shape.forEach((row, r) => row.forEach((cell, c) => {
+            if (cell) drawSquare(p.x + c, p.y + r, p.color);
+        }));
+    }
+
+    function drawSubCanvas(type, context, canvasObj) {
+        context.clearRect(0, 0, canvasObj.width, canvasObj.height);
+        if (!type) return;
+        const shape = SHAPES[type];
+        const color = COLORS[type];
+        const offset = (canvasObj.width - shape[0].length * 20) / 2;
+        shape.forEach((row, r) => row.forEach((cell, c) => {
+            if (cell) {
+                context.fillStyle = color;
+                context.fillRect(offset + c * 20, 20 + r * 20, 18, 18);
+            }
+        }));
+    }
+
+    function drop() {
+        if (!p.collision(0, 1)) {
+            p.y++;
+        } else {
+            lock();
+        }
+        drawBoard();
+    }
+
+    function lock() {
+        p.shape.forEach((row, r) => row.forEach((cell, c) => {
+            if (cell && p.y + r >= 0) board[p.y + r][p.x + c] = p.type;
+        }));
+
+        // ライン消去
+        let lines = 0;
+        for (let r = ROWS - 1; r >= 0; r--) {
+            if (board[r].every(cell => cell !== 0)) {
+                board.splice(r, 1);
+                board.unshift(Array(COLS).fill(0));
+                lines++;
+                r++;
+            }
+        }
+        if (lines > 0) {
+            score += [0, 100, 300, 500, 800][lines] * level;
+            linesCleared += lines;
+            level = Math.floor(linesCleared / 10) + 1;
+            document.getElementById('score').innerText = score;
+            document.getElementById('level').innerText = level;
+        }
+
+        p = new Piece(nextType);
+        nextType = Math.floor(Math.random() * 7) + 1;
+        drawSubCanvas(nextType, nCtx, nextCanvas);
+        canHold = true;
+
+        if (p.collision(0, 0)) {
+            gameOver = true;
+            alert("GAME OVER! Score: " + score);
+            location.reload();
+        }
+    }
+
+    function holdPiece() {
+        if (!canHold) return;
+        if (holdType === null) {
+            holdType = p.type;
+            p = new Piece(nextType);
+            nextType = Math.floor(Math.random() * 7) + 1;
+        } else {
+            let temp = p.type;
+            p = new Piece(holdType);
+            holdType = temp;
+        }
+        drawSubCanvas(holdType, hCtx, holdCanvas);
+        drawSubCanvas(nextType, nCtx, nextCanvas);
+        canHold = false;
+    }
+
+    document.addEventListener('keydown', e => {
+        if (gameOver) return;
+        if (e.key === 'ArrowLeft' && !p.collision(-1, 0)) p.x--;
+        if (e.key === 'ArrowRight' && !p.collision(1, 0)) p.x++;
+        if (e.key === 'ArrowDown') drop();
+        if (e.key === 'ArrowUp') p.rotate();
+        if (e.key === 'c' || e.key === 'C') holdPiece();
+        if (e.key === ' ') { while (!p.collision(0, 1)) p.y++; lock(); }
+        drawBoard();
+    });
+
+    drawSubCanvas(nextType, nCtx, nextCanvas);
+    
+    let dropStart = Date.now();
+    function animate() {
+        let now = Date.now();
+        let delta = now - dropStart;
+        let speed = Math.max(100, 800 - (level - 1) * 100);
+        if (delta > speed) {
+            drop();
+            dropStart = now;
+        }
+        if (!gameOver) requestAnimationFrame(animate);
+    }
+
+    animate();
+</script>
+</body>
+</html>
